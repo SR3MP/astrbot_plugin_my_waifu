@@ -1,0 +1,188 @@
+{
+  "game": {
+    "type": "object",
+    "description": "游戏数值设定",
+    "hint": "调整后宫养成系统的各项数值参数",
+    "items": {
+      "checkin_reward": {
+        "type": "int",
+        "description": "每日签到积分",
+        "hint": "用户每天签到获得的积分数量",
+        "default": 10
+      },
+      "guess_base": {
+        "type": "int",
+        "description": "猜对基础奖励",
+        "hint": "猜对角色时获得的基础积分（不含梯度加成）",
+        "default": 20
+      },
+      "solved_bonus": {
+        "type": "list",
+        "description": "猜对梯度加成",
+        "hint": "按第1~N次猜对的额外加分列表。如 [0,5,10,15,20] 表示第1次+0、第2次+5、第3次+10、第4次+15、第5次+20。列表长度应与「每日给积分次数」一致",
+        "default": [0, 5, 10, 15, 20],
+        "items": { "type": "int" }
+      },
+      "daily_solved_limit": {
+        "type": "int",
+        "description": "每日给积分次数",
+        "hint": "每天猜对前N次给积分，超出后猜对不再给分",
+        "default": 5
+      },
+      "daily_wed_init": {
+        "type": "int",
+        "description": "每日迎娶初始次数",
+        "hint": "每天初始可迎娶老婆的次数",
+        "default": 5
+      },
+      "wed_upgrade_base": {
+        "type": "int",
+        "description": "迎娶升级基础花费",
+        "hint": "升级迎娶次数的花费 = 此值 × 已升级次数。如设置为30，第1次升级花30、第2次花60、第3次花90",
+        "default": 30
+      },
+      "capacity_init": {
+        "type": "int",
+        "description": "后宫初始容量",
+        "hint": "用户初始的后宫容量格数",
+        "default": 1
+      },
+      "capacity_expand_base": {
+        "type": "int",
+        "description": "扩容基础花费",
+        "hint": "扩容后宫的花费 = 此值 × 已扩容次数。如设置为50，第1次扩容花50、第2次花100",
+        "default": 50
+      },
+      "reinvite_cost": {
+        "type": "int",
+        "description": "请回老婆花费",
+        "hint": "把已移除的老婆请回后宫的固定积分花费",
+        "default": 100
+      }
+    }
+  },
+  "extraction": {
+    "type": "object",
+    "description": "抽取设定",
+    "hint": "调整角色抽取池的范围和过滤条件",
+    "items": {
+      "min_collects": {
+        "type": "int",
+        "description": "收藏数下限",
+        "hint": "只抽收藏数超过此值的角色，避免太冷门",
+        "default": 450
+      },
+      "start_year": {
+        "type": "int",
+        "description": "起始年份",
+        "hint": "抽取作品池的最早年份",
+        "default": 2000
+      },
+      "end_year": {
+        "type": "int",
+        "description": "结束年份",
+        "hint": "抽取作品池的最晚年份",
+        "default": 2026
+      },
+      "year_pool_size": {
+        "type": "int",
+        "description": "每年候选数",
+        "hint": "每年按热度取前N部动画作为候选",
+        "default": 15
+      },
+      "subject_types": {
+        "type": "list",
+        "description": "作品类型",
+        "hint": "抽取池包含的作品类型：2=动画, 4=游戏, 6=三次元, 1=书籍, 8=其他。默认仅动画 [2]",
+        "default": [2],
+        "items": { "type": "int" }
+      },
+      "main_only": {
+        "type": "bool",
+        "description": "仅主角",
+        "hint": "开启后只抽主角角色，关闭后包含主角和配角",
+        "default": true
+      },
+      "max_attempts": {
+        "type": "int",
+        "description": "最大抽取尝试次数",
+        "hint": "单次抽取失败后的重试上限",
+        "default": 10
+      },
+      "hints_total": {
+        "type": "int",
+        "description": "渐进线索总条数",
+        "hint": "猜错时自动解锁的线索总数（最大8条）",
+        "default": 6
+      }
+    }
+  },
+  "network": {
+    "type": "object",
+    "description": "网络与API",
+    "hint": "Bangumi API 请求参数，一般无需修改",
+    "items": {
+      "http_timeout": {
+        "type": "int",
+        "description": "API超时(秒)",
+        "hint": "Bangumi API 单次请求超时时间，建议不超过 8 秒",
+        "default": 6
+      },
+      "image_http_timeout": {
+        "type": "int",
+        "description": "图片下载超时(秒)",
+        "hint": "下载角色立绘图片的超时时间",
+        "default": 12
+      },
+      "rate_limit": {
+        "type": "float",
+        "description": "运行时请求间隔(秒)",
+        "hint": "运行时每次API请求之间的礼貌间隔",
+        "default": 0.15
+      },
+      "detail_fetch_limit": {
+        "type": "int",
+        "description": "详情补查上限",
+        "hint": "猜题线索聚合时最多补查多少部作品详情",
+        "default": 40
+      },
+      "retry_times": {
+        "type": "int",
+        "description": "重试次数",
+        "hint": "单次API请求失败后的重试次数（限流/5xx时生效），建议不超过 2",
+        "default": 1
+      },
+      "retry_base": {
+        "type": "float",
+        "description": "退避基数(秒)",
+        "hint": "指数退避的基数，第n次重试等待 retry_base × 2^n 秒",
+        "default": 1.0
+      },
+      "guess_search_limit": {
+        "type": "int",
+        "description": "猜题搜索条数上限",
+        "hint": "/老婆猜 搜索角色时返回的候选条数上限（Bangumi API 上限 25）",
+        "default": 16
+      }
+    }
+  },
+  "local_db": {
+    "type": "object",
+    "description": "本地库设置",
+    "hint": "每日同步本地老婆数据库的参数",
+    "items": {
+      "sync_rate": {
+        "type": "float",
+        "description": "同步请求间隔(秒)",
+        "hint": "每日同步本地库时的API请求间隔",
+        "default": 0.1
+      },
+      "clue_cache_limit": {
+        "type": "int",
+        "description": "线索缓存上限",
+        "hint": "线索缓存最多保留多少条，超出后丢弃最旧的",
+        "default": 3000
+      }
+    }
+  }
+}

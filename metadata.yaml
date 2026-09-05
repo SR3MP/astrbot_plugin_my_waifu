@@ -1,0 +1,32 @@
+name: astrbot_plugin_my_waifu
+display_name: 专属老婆（Bangumi版）
+desc: 个人后宫养成：/抽老婆 抽一位只属于自己的神秘老婆，/老婆猜 猜名字拿线索对比，猜对可迎娶进后宫，含签到、积分、扩容、请回等养成玩法。数据来自Bangumi（bgm.tv）。
+short_desc: 个人后宫养成（Bangumi版）
+author: SR3MP
+repo: https://github.com/SR3MP/astrbot_plugin_my_waifu
+version: 3.2.0
+astrbot_version: ">=4.24.0"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook
+  - telegram
+  - wecom
+  - wecom_ai_bot
+  - lark
+  - dingtalk
+  - discord
+  - slack
+  - kook
+  - vocechat
+  - weixin_official_account
+  - satori
+  - misskey
+  - line
+  - matrix
+  - weixin_oc
+  - mattermost
+  - webchat
+tags:
+  - 娱乐
+  - 动画
