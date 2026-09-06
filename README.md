@@ -51,7 +51,7 @@
 
 ## 配置
 
-在 AstrBot 管理面板「插件 → today_wife」可配置，分为 4 组：
+在 AstrBot 管理面板「插件 → today_waifu」可配置，分为 4 组：
 
 - **游戏**：签到奖励、猜对积分梯度、迎娶/扩容/请回花费
 - **抽取**：收藏数阈值、年份范围、候选池大小、类型列表、主角过滤、线索条数
@@ -62,4 +62,4 @@
 
 ## 安装
 
-将 `astrbot_plugin_today_wife` 目录放入 `data/plugins/`，在面板 `/plugins reload` 或重启 AstrBot 后启用。
+将 `astrbot_plugin_today_waifu` 目录放入 `data/plugins/`，在面板 `/plugins reload` 或重启 AstrBot 后启用。
