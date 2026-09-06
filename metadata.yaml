@@ -4,7 +4,7 @@ desc: 个人后宫养成：/抽老婆 抽一位只属于自己的神秘老婆，
 short_desc: 个人后宫养成（Bangumi版）
 author: SR3MP
 repo: https://github.com/SR3MP/astrbot_plugin_my_waifu
-version: 3.2.0
+version: 3.2.1
 astrbot_version: ">=4.24.0"
 support_platforms:
   - aiocqhttp
