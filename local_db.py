@@ -21,7 +21,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date
 
 # 插件以 data.plugins.<目录>.<module> 包路径加载时，插件目录不在 sys.path 顶层
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,6 +51,7 @@ _MAX_LOG = 8              # 进度日志最多打印条数
 
 _build_lock = threading.Lock()
 _clue_lock = threading.Lock()
+_last_sync_at = 0.0      # 最近一次同步尝试的时间戳（失败也记录，防止网络故障时反复触发重建）
 
 
 # ---------- 本地库读写 ----------
@@ -164,7 +165,6 @@ def build_local_db(start_year=None, end_year=None,
     entries = {}
     subject_count = 0
     failed = 0
-    shown = 0
     interrupted = False
     for i, subject in enumerate(pool, 1):
         if cancel_flag is not None and cancel_flag():
@@ -222,11 +222,20 @@ def build_local_db(start_year=None, end_year=None,
 
 
 def ensure_local_db_bg():
-    """确保本地库新鲜：过期则起后台线程重建（不阻塞玩家）。"""
+    """确保本地库新鲜：过期则起后台线程重建（不阻塞玩家）。
+
+    带同步冷却：上一次同步尝试在 SYNC_BACKOFF 秒内（通常是网络故障导致
+    空库/失败）不重复起线程，避免每次 /抽老婆 都触发一次全量重建轰炸 API。
+    """
+    global _last_sync_at
     if local_db_ok():
         return
     if _build_lock.locked():
         return  # 已在同步中
+    now = time.time()
+    if now - _last_sync_at < settings.SYNC_BACKOFF:
+        return
+    _last_sync_at = now
     th = threading.Thread(target=_sync_worker, daemon=True, name="wife-sync")
     th.start()
 
@@ -236,6 +245,9 @@ def _sync_worker():
         return
     try:
         build_local_db(log=lambda m: None)
+    except Exception:
+        # 意外异常不吞锁：冷却机制兜底，下次冷却期过后再试
+        pass
     finally:
         _build_lock.release()
 

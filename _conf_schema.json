@@ -163,6 +163,30 @@
         "description": "猜题搜索条数上限",
         "hint": "/老婆猜 搜索角色时返回的候选条数上限（Bangumi API 上限 25）",
         "default": 16
+      },
+      "api_source": {
+        "type": "string",
+        "description": "API 数据源",
+        "hint": "official=官方 api.bgm.tv（需外网/代理），mirror=境内镜像 bgmapi.anibt.net（国内推荐）。也可填自定义反代 URL（如 https://your-proxy.com/v0）",
+        "default": "official"
+      },
+      "draw_timeout": {
+        "type": "int",
+        "description": "抽取总超时(秒)",
+        "hint": "/抽老婆 整条链路（建池+抽取+聚合）的总超时，超时后直接返回提示，不让玩家无限等",
+        "default": 90
+      },
+      "pool_lock_timeout": {
+        "type": "int",
+        "description": "建池锁等待(秒)",
+        "hint": "有人正在后台建池时，抽取线程等待锁的超时。超时后快速失败返回空池，避免无限阻塞",
+        "default": 10
+      },
+      "pool_empty_backoff": {
+        "type": "int",
+        "description": "空池冷却(秒)",
+        "hint": "建池结果为空（通常是网络故障）时，短时间内快速失败不再重复重建，避免轰炸 API",
+        "default": 300
       }
     }
   },
@@ -182,6 +206,12 @@
         "description": "线索缓存上限",
         "hint": "线索缓存最多保留多少条，超出后丢弃最旧的",
         "default": 3000
+      },
+      "sync_backoff": {
+        "type": "int",
+        "description": "同步冷却(秒)",
+        "hint": "上一次同步失败/产出空库后，N 秒内不重复触发重建，避免反复轰炸 API",
+        "default": 600
       }
     }
   }

@@ -1,11 +1,15 @@
 """
-专属老婆插件 v3.2（Bangumi 实时版 + 后宫积分系统 + 全配置化）
+专属老婆插件 v3.4.0（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
 ==============================================
 - v2.1 遗留问题：SUBJECT_POOL 硬编码仅 2 部作品
 - v3.0 解决：用 POST /v0/search/subjects 按年份+热度排序随机抽作品，
   作品池 = Bangumi 全站数万部，无需再人工硬编码 ID
 - v3.1：移除全群共享的「今日老婆 / 今日猜题」，仅保留个人专属老婆养成
 - v3.2：本地库每日同步 + 全配置化（_conf_schema.json + settings.py）
+- v3.3：镜像 API 数据源切换（official/mirror/自定义反代）
+- v3.4：HTTP 通信与 API 源管理统一抽取到 api_client.BangumiClient，
+  消除 main.py 与 bangumi.py 的重复 HTTP 代码；图片 URL 原始存储，
+  下载时按当前数据源动态改写（支持双向还原）
 - 后宫系统：/抽老婆 抽专属老婆→/老婆猜 猜中→/老婆迎娶 迎娶进后宫；
   签到/老婆猜对赚积分，扩容/老婆升迎娶/请回花积分
 
@@ -44,16 +48,18 @@ if str(PLUGIN_DIR) not in sys.path:
 # 防止 AstrBot 长期运行后 sys.modules 缓存旧版插件模块对象（热重载不清缓存，
 # 会出现"文件里明明有 CLUE_VERSION 却 cannot import name"）。强制重新加载磁盘最新版。
 for _m in (
+    "api_client",
     "bangumi",
     "settings",
     "guess",
     "harem",
     "local_db",
-    "data.plugins.astrbot_plugin_today_wife.bangumi",
-    "data.plugins.astrbot_plugin_today_wife.settings",
-    "data.plugins.astrbot_plugin_today_wife.guess",
-    "data.plugins.astrbot_plugin_today_wife.harem",
-    "data.plugins.astrbot_plugin_today_wife.local_db",
+    "data.plugins.astrbot_plugin_my_waifu.api_client",
+    "data.plugins.astrbot_plugin_my_waifu.bangumi",
+    "data.plugins.astrbot_plugin_my_waifu.settings",
+    "data.plugins.astrbot_plugin_my_waifu.guess",
+    "data.plugins.astrbot_plugin_my_waifu.harem",
+    "data.plugins.astrbot_plugin_my_waifu.local_db",
 ):
     sys.modules.pop(_m, None)
 
@@ -63,6 +69,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.star.filter.command import GreedyStr
 
 import settings
+from api_client import client
 from bangumi import (
     random_wife,
     collect_character_info,
@@ -78,7 +85,20 @@ import local_db
 
 DATA_DIR = PLUGIN_DIR / "data"
 IMAGE_DIR = PLUGIN_DIR / "images"
-UA = {"User-Agent": "astrbot-plugin-my-waifu/3.2.0 (https://github.com/SR3MP/astrbot_plugin_my_waifu)"}
+
+
+def _api_fail_hint():
+    """Bangumi API 不可达时的镜像源切换提示（仅在使用官方源时显示）。
+
+    镜像源 bgmapi.anibt.net 同步将响应中的图片 URL 改写为 bgmimg.anibt.net，
+    切换后抽取/猜题/立绘下载均自动走镜像，无需额外配置。
+    """
+    if client.source == "official":
+        return (
+            "\n💡 提示：当前使用官方 API 源（api.bgm.tv），境内服务器可能无法直连。"
+            "\n   请在管理面板「插件 → my_waifu → 网络」将「API 数据源」改为 mirror。"
+        )
+    return ""
 
 # 猜题匹配：搜索结果的收藏数缓存（跨猜题复用；进程内，热重载/重启失效）
 # 带 LRU 上限（_COLLECTS_CACHE_MAX），防止长时间运行后无限膨胀
@@ -172,43 +192,6 @@ def _attach_collects(results):
     return {c.get("id"): (_cache_get(c.get("id")) or 0, _cn_get(c.get("id")) or "") for c in results if c.get("id")}
 
 
-def _download(url, dest_path):
-    """下载图片到 dest_path，成功返回 True。
-
-    修复说明：
-    - 不再触碰 socket.setdefaulttimeout（进程级全局状态，多线程并发设置/恢复
-      会互相覆盖，污染 AstrBot 其他网络组件）；超时完全交给 urlopen 的 timeout 参数。
-    - 先写临时文件再 os.replace 原子替换，避免下载中断留下半截图片被当成有效缓存；
-    - 下载完成后校验文件大小 > 0，空文件视为失败；
-    - 失败按 settings.RETRY_TIMES 指数退避重试（限流 429/5xx/超时/连接错误），
-      临时网络故障自动恢复；非限流 4xx（如图片 404）不重试，立即失败。
-    """
-    import os
-    import urllib.request
-    import urllib.error
-    dest_path = Path(dest_path)
-    tmp_path = dest_path.with_suffix(dest_path.suffix + ".tmp")
-    req = urllib.request.Request(url, headers=UA)
-    last = None
-    for attempt in range(settings.RETRY_TIMES + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=settings.IMAGE_HTTP_TIMEOUT) as r, open(tmp_path, "wb") as f:
-                f.write(r.read())
-            if tmp_path.stat().st_size <= 0:
-                raise OSError("downloaded empty image")
-            os.replace(tmp_path, dest_path)
-            return True
-        except (urllib.error.HTTPError, urllib.error.URLError,
-                TimeoutError, ConnectionError, OSError) as e:
-            last = e
-            # 非限流/非5xx 的 HTTP 错误（如 404）不重试
-            if isinstance(e, urllib.error.HTTPError) and e.code not in (429, 500, 502, 503, 504):
-                break
-            if attempt < settings.RETRY_TIMES:
-                time.sleep(settings.RETRY_BASE * (2 ** attempt))
-    raise last
-
-
 def _image_path(wife):
     """返回净化后的立绘缓存路径：id 只保留数字，防止非法字符拼出危险路径。"""
     import re
@@ -219,8 +202,8 @@ def _image_path(wife):
 def _ensure_wife_image(wife):
     """本地缓存立绘，失败返回 None（降级为无图）。
 
-    - 文件名只保留 id 中的数字（净化，防止非法字符拼出危险路径）；
-    - 已存在的缓存文件若大小为 0（历史遗留的坏文件），会重新下载覆盖。
+    v3.4：图片 URL 原始存储（lain.bgm.tv），下载时由 client.download()
+    按当前数据源动态改写。已存在的缓存文件若大小为 0（历史坏文件），会重新下载。
     """
     img_path = _image_path(wife)
     if img_path.exists() and img_path.stat().st_size > 0:
@@ -229,13 +212,13 @@ def _ensure_wife_image(wife):
     if not url:
         return None
     try:
-        _download(url, img_path)
+        client.download(url, img_path)
         return img_path
     except Exception:
         return None
 
 
-@register("astrbot_plugin_today_wife", "SR3MP", "专属老婆（Bangumi版）", "3.2.0")
+@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.0")
 class WifePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -267,7 +250,7 @@ class WifePlugin(Star):
             "  🎴 想看看能抽到什么？/老婆卡池",
             "",
             "📖 规则说明",
-            f"  · 每天可无限猜，猜错不扣分",
+            "  · 每天可无限猜，猜错不扣分",
             f"  · 每天前 {n_solved} 次猜对给积分",
             f"    第1~{n_solved}次：{reward_str}",
             f"  · 每日签到 +{settings.CHECKIN_REWARD} 积分",
@@ -292,6 +275,7 @@ class WifePlugin(Star):
             "  /老婆帮助          查看帮助与规则说明",
             "━━━━━━━━━━━━━━━━",
             "🔗 数据源：Bangumi API (bgm.tv)",
+            f"📡 当前数据源：{client.source}",
         ]
         return "\n".join(lines)
 
@@ -339,6 +323,7 @@ class WifePlugin(Star):
         info = local_db.get_clue(wife["id"])
         if info and info.get("_clue_version") != CLUE_VERSION:
             info = None            # 旧版线索缓存作废，重新聚合
+        cached = info is not None
         if not info:
             try:
                 info = collect_character_info(wife["id"])
@@ -353,6 +338,17 @@ class WifePlugin(Star):
         info["hint_idx"] = 1   # 已展示线索条数（猜错自动+1）
         info["_picked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         info["_cost"] = round(time.time() - t0, 1)
+        if not cached:
+            # 修复：线索此前只在「猜对」时（/老婆猜 分支）写缓存，抽取时聚合的结果
+            # 被丢弃——本地库 326 位老婆里只有 35 位有线索，89% 的 /抽老婆 都要走一次
+            # 实时聚合（角色详情 + 作品列表 + CV + 逐部作品详情 ≈ 5~20 个串行请求）。
+            # 网络抖动时任一请求抛错即被上面的 except 吞掉并 return None，
+            # 表现为「❌ 抽取失败：Bangumi 网络波动」。此处聚合成功即落缓存，
+            # 之后抽到同一角色直接秒回。cache_clue 会剥离 hint_idx/_picked_at/_cost。
+            try:
+                local_db.cache_clue(wife["id"], info)
+            except Exception as e:
+                logger.warning(f"抽老婆：线索写缓存失败 id={wife['id']}: {e}")
         harem.set_active_wife(uid, info)
         return info
 
@@ -360,6 +356,14 @@ class WifePlugin(Star):
     async def on_draw_wife(self, event: AstrMessageEvent):
         """抽一位只属于自己的神秘老婆，猜对即可迎娶进后宫。"""
         uid = self._uid_with_name(event)
+        # 有猜对未迎娶的老婆时先提醒，避免用户再抽/再猜把她顶掉
+        pending = harem.get_pending_accept(uid)
+        if pending:
+            pname = pending.get("name") or "神秘老婆"
+            yield event.plain_result(
+                f"💕 你还有猜对的老婆「{pname}」待迎娶～先发 /老婆迎娶 接她回家吧！"
+                "（再抽/再猜会把她顶掉哦）"
+            )
         # 已有进行中的老婆时，/抽老婆 不重新抽，而是展示当前线索进度（行为与文案统一）
         existing = harem.get_active_wife(uid)
         if existing and existing.get("_clue_version") == CLUE_VERSION:
@@ -367,9 +371,18 @@ class WifePlugin(Star):
             yield event.plain_result("💖 你已经有专属老婆在猜啦，这是当前线索进度：")
         else:
             yield event.plain_result("🎴 正在为你抽取一位专属老婆...")
-            wife = await asyncio.to_thread(self._get_personal_wife, uid)   # 同步网络调用挪到线程池，避免阻塞事件循环
+            try:
+                # 整条抽取链路总超时：新抽取 = 建池(快速失败) + 随机 + 详情聚合。
+                # 网络故障时历史上可卡 6+ 分钟，这里兜底不让玩家无限等
+                wife = await asyncio.wait_for(
+                    asyncio.to_thread(self._get_personal_wife, uid),   # 同步网络调用挪到线程池，避免阻塞事件循环
+                    timeout=settings.DRAW_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning(f"抽老婆：抽取链路超时（>{settings.DRAW_TIMEOUT}s）uid={uid}")
+                yield event.plain_result(f"⏳ 抽取超时（Bangumi 网络波动），请稍后再试。{_api_fail_hint()}")
+                return
             if not wife:
-                yield event.plain_result("❌ 抽取失败：Bangumi 网络波动，请稍后再试。")
+                yield event.plain_result(f"❌ 抽取失败：Bangumi 网络波动，请稍后再试。{_api_fail_hint()}")
                 return
             yield event.plain_result("🔍 你的专属神秘老婆已就位！")
         hints = wife.get("hints") or []
@@ -391,16 +404,34 @@ class WifePlugin(Star):
         uid = self._uid_with_name(event)
         pending = harem.get_pending_accept(uid)
         if not pending:
-            yield event.plain_result("没有待迎娶的老婆～先 /抽老婆 并猜对，再用 /老婆迎娶")
+            # 区分「还没猜对」与「完全没有进行中」，给出明确的下一步
+            personal = harem.get_active_wife(uid)
+            if personal:
+                idx = int(personal.get("hint_idx", 1) or 1)
+                yield event.plain_result(
+                    "😉 你还没猜对哦！当前神秘老婆的线索已解锁 "
+                    f"{idx} 条，先 /老婆猜 <名字> 猜对后再用 /老婆迎娶～"
+                )
+            else:
+                yield event.plain_result("没有待迎娶的老婆～先 /抽老婆 抽一位，猜对后再用 /老婆迎娶")
             return
         ok, msg = harem.add_to_harem(uid, {"id": pending["id"], "name": pending["name"]})
-        # 无论成败都清 pending：失败时（已在后宫/容量满等）也释放资格并明确提示，
-        # 避免用户反复 /老婆迎娶 看到同一句错误，且无法重新抽/猜
-        harem.set_pending_accept(uid, None)
         if ok:
+            # 迎娶成功才释放资格
+            harem.set_pending_accept(uid, None)
             yield event.plain_result(f"🎉 {msg}\n发 /老婆后宫 查看你的后宫")
         else:
-            yield event.plain_result(f"❌ {msg}\n本次迎娶未成功，资格已释放；可重新 /抽老婆 再猜一位。")
+            # 修复：失败时不再无条件清 pending。容量满/次数用完都是可解决的
+            # （扩容/移除/升级/明天再来），猜对的老婆不该被悄悄丢掉，否则用户
+            # 扩容后再 /老婆迎娶 会看到「没有待迎娶的老婆」。只有「已在后宫」
+            # 属永久性失败，才释放资格避免反复报错。
+            if "已经在你的后宫里" in msg:
+                harem.set_pending_accept(uid, None)
+            pending_name = pending.get("name") or "这位老婆"
+            yield event.plain_result(
+                f"💔 {msg}\n「{pending_name}」还在等你迎娶～"
+                f"处理完上面的问题后再发 /老婆迎娶 即可。"
+            )
 
     @filter.command("老婆猜")
     async def on_guess(self, event: AstrMessageEvent, name: GreedyStr):
@@ -426,7 +457,7 @@ class WifePlugin(Star):
             results = resp.get("data") or []
         except Exception as e:
             logger.warning(f"猜老婆：搜索角色失败: {e}")
-            yield event.plain_result("❌ 搜索 Bangumi 失败，请稍后再试。")
+            yield event.plain_result(f"❌ 搜索 Bangumi 失败，请稍后再试。{_api_fail_hint()}")
             return
 
         if not results:
@@ -470,7 +501,15 @@ class WifePlugin(Star):
 
         cid = results[0]["id"]
         try:
-            guess_info = await asyncio.to_thread(collect_character_info, cid)   # 同步网络调用挪到线程池
+            # 聚合最多放行 DRAW_TIMEOUT 秒：网络波动时角色详情逐个请求可能卡很久，
+            # 不能让玩家无限等（超时后线程仍在后台跑完，不会阻塞响应）
+            guess_info = await asyncio.wait_for(
+                asyncio.to_thread(collect_character_info, cid),
+                timeout=settings.DRAW_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(f"猜老婆：聚合超时（>{settings.DRAW_TIMEOUT}s）id={cid}")
+            yield event.plain_result(f"❌ 解析该角色超时（Bangumi 网络波动），请稍后重试。{_api_fail_hint()}")
+            return
         except Exception as e:
             logger.warning(f"猜老婆：聚合玩家猜测失败 id={cid}: {e}")
             yield event.plain_result("❌ 解析该角色失败，请换个名字。")
@@ -496,9 +535,9 @@ class WifePlugin(Star):
             yield event.plain_result("\n".join(result))
 
             img_path = _image_path(answer)
-            if not img_path.exists():
+            if not (img_path.exists() and img_path.stat().st_size > 0):
                 img_path = await asyncio.to_thread(_ensure_wife_image, {"id": answer["id"], "image_url": answer.get("image_url")})
-            if img_path:
+            if img_path and img_path.exists() and img_path.stat().st_size > 0:
                 yield event.image_result(str(img_path))
         else:
             hints = answer.get("hints") or []
@@ -633,7 +672,7 @@ class WifePlugin(Star):
             yield event.image_result(str(img_path))
         else:
             yield event.plain_result(
-                f"❌ 「{hit.get('name_cn') or hit.get('name')}」本地无图且下载失败（图床被网络阻断），等待批量补图。"
+                f"❌ 「{hit.get('name_cn') or hit.get('name')}」本地无图且下载失败（图床被网络阻断），等待批量补图。{_api_fail_hint()}"
             )
 
     @filter.command("老婆卡池")

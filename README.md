@@ -1,7 +1,6 @@
-# 专属老婆（Bangumi版）
-V3.2.2
+# 专属老婆 v3.4.0
 
-> ⚠️ **网络环境要求**：本插件数据源为 Bangumi（bgm.tv），抽卡、猜题、线索聚合等依赖其 API 实时拉取。运行 AstrBot 的服务器需能**正常访问外网**（特别是 api.bgm.tv），否则抽取会失败或超时；建议在部署环境先行测试 `api.bgm.tv` 连通性（面板配置中也可调整请求超时与重试策略）。P.S. 需要魔法环境。
+> ⚠️ **网络环境要求**：本插件数据源为 Bangumi（bgm.tv），抽卡、猜题、线索聚合等依赖其 API 实时拉取。运行 AstrBot 的服务器需能**正常访问外网**（特别是 api.bgm.tv），否则抽取会失败或超时。国内服务器如无法直连官方 API，请在面板「插件 → my_waifu → 网络」将 **API 数据源** 切换为 `mirror`（境内镜像 bgmapi.anibt.net，自动改写图片 URL 为 bgmimg.anibt.net，抽卡/猜题/立绘下载全链路自动走镜像）。也可填入自定义反代 URL。
 
 个人专属老婆养成插件：抽一位只属于自己的神秘老婆，猜名字拿线索对比，猜对可迎娶进后宫。数据源来自 Bangumi（bgm.tv）。
 
@@ -47,20 +46,39 @@ V3.2.2
 - **本地老婆库** `data/wife_db.json`：每日首抽前后台懒加载重建（不阻塞玩家），之后直接抽本地库，秒回、不走 API
 - 线索聚合缓存 `data/clue_cache.json`（上限 3000 条），猜对后自动入库
 - 立绘缓存于 `images/`，同名角色只请求一次；卡池中未就绪的角色发 `/老婆立绘 <名字>` 会按需下载补图
+- 图片 URL 全程以原始域名（lain.bgm.tv）存储，仅在下载时按当前数据源动态改写；切换 API 源后旧缓存中的图片自动适配新源，无需手动清理
 
 > 📅 **跨年提示**：抽取范围的「结束年份」默认值为当前年份（插件版本内固定），每年的 1 月 1 日起候选池将不再收录新一年的作品，请在面板「抽取」分组把结束年份更新为当前年份，或等待插件发布新版本。
 
 ## 配置
 
-在 AstrBot 管理面板「插件 → today_waifu」可配置，分为 4 组：
+在 AstrBot 管理面板「插件 → my_waifu」可配置，分为 4 组：
 
 - **游戏**：签到奖励、猜对积分梯度、迎娶/扩容/请回花费
 - **抽取**：收藏数阈值、年份范围、候选池大小、类型列表、主角过滤、线索条数
-- **网络**：请求超时、频率限制、重试策略
+- **网络**：请求超时、频率限制、重试策略、API 数据源（official/mirror/自定义反代 URL）
 - **本地库**：同步频率、线索缓存上限
 
-所有可配置项的默认值集中在 `settings.py`，`_conf_schema.json` 定义了面板可见字段。
+所有可配置项的默认值集中在 `settings.py`，`_conf_schema.json` 定义了面板可见字段。HTTP 通信与 API 源管理由 `api_client.py` 的 `BangumiClient` 单例统一处理。
 
 ## 安装
 
-将 `astrbot_plugin_today_waifu` 目录放入 `data/plugins/`，在面板 `/plugins reload` 或重启 AstrBot 后启用。
+将 `astrbot_plugin_my_waifu` 目录放入 `data/plugins/`，在面板 `/plugins reload` 或重启 AstrBot 后启用。
+
+## 更新日志
+
+### v3.4.0（2026-09-13）
+
+- 🔧 **统一 API 客户端**：新增 `api_client.py`，将 `main.py` 与 `bangumi.py` 中重复的 HTTP 重试 / 超时 / UA / 图片 URL 改写逻辑集中到 `BangumiClient` 单例。所有模块通过 `client` 实例调用 API，消除代码重复。
+- 🔄 **图片 URL 原始存储**：拉取到的图片 URL 不再在数据落盘时改写，全程以原始域名（lain.bgm.tv）存储于 `wife_db.json` 和 `clue_cache.json`。仅在下载立绘时按当前数据源动态改写，切换 API 源后旧缓存中的图片自动适配新源，无需手动清理。
+- ↔️ **双向 URL 改写**：从 `mirror` 切回 `official` 时，自动将旧缓存中的 bgmimg.anibt.net URL 还原为 lain.bgm.tv，彻底解决切源后图片下载失败的问题。
+- 🐛 修复 `bangumi.py` 未使用的 `datetime` 导入（pyflakes 警告）。
+- 🐛 修复 `guess.py` docstring 线索顺序描述与实际实现不符（3来源标签 4作品类型 5CV 6出演作品名）。
+- 🐛 修复 `main.py` `_help_text()` 仍使用已废弃的 `settings.API_SOURCE` 显示数据源信息，改用 `client.source` 与 `_api_fail_hint()` 保持一致。
+
+### v3.3.0（2025-09-13）
+
+- ✨ **镜像 API 数据源**：面板「网络 → API 数据源」新增 `mirror` 选项（bgmapi.anibt.net），境内服务器无需魔法即可使用。镜像响应自动将图片 URL 改写为 bgmimg.anibt.net，抽卡/猜题/立绘下载全链路自动走镜像，零额外配置。
+- ✨ **自定义反代**：`API_SOURCE` 支持填入任意 HTTPS URL 作为 Bangumi API 反代地址，满足自建反代需求。
+- ✨ **配置面板网控**：`API_SOURCE` 可通过管理面板「插件 → my_waifu → 网络」直接切换，无需改代码。
+- ✨ **友好提示**：Bangumi API 不可达时，错误消息自动提示切换数据源。

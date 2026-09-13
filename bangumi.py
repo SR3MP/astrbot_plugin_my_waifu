@@ -1,32 +1,33 @@
 """
-Bangumi v0 API 封装层
-=====================
+Bangumi v0 API 封装层（v3.4.0 重构）
+=====================================
+v3.4.0：HTTP 通信与 API 源管理统一抽取到 api_client.BangumiClient，
+本文件仅保留业务逻辑（抽老婆、线索聚合、工具函数）和向后兼容的薄包装。
+
 按年份+热度排序抽作品，作品池 = 每年热度前 N 部动画
+（2000~2026 逐年搜索，跨年去重后约 400 部候选，当天磁盘缓存复用）。
 
-与 v2.1 的关键区别（v2.1 遗留问题：作品池硬编码只有 2 部）：
-    v2.1: SUBJECT_POOL 硬编码 2 个 subject id -> 候选 7 个（小圆占 6/7）
-    v3.0: 按年份+热度排序抽作品，作品池 = 每年热度前 N 部动画
-          （2000~2026 逐年搜索，跨年去重后约 400 部候选，当天磁盘缓存复用）
-
+图片 URL 全程原始存储（lain.bgm.tv），仅在下载时由 client 动态改写。
 所有可配置数值从 settings 模块读取，可在 WebUI 插件配置页修改。
 """
 import json
 import os
 import random
-import socket
 import threading
 import time
-import urllib.error
-import urllib.request
-from datetime import date, datetime
+from datetime import date
 
 import settings
+from api_client import client
 
-API = "https://api.bgm.tv/v0"
-# Bangumi API 要求 UA 带应用名+联系方式（官网规范：AppName/Version (contact)）
-UA = {"User-Agent": "astrbot-plugin-my-waifu/3.2.0 (https://github.com/SR3MP/astrbot_plugin_my_waifu)"}
-SEARCH_LIMIT_MAX = 25   # v0 search 接口 limit 的保守上限，超过会被服务端拒绝
-BATCH_SIZE = 10         # search 每次批量取的条数（API 技术参数，不可配置）
+# 向后兼容的常量（实际值由 BangumiClient 定义）
+SEARCH_LIMIT_MAX = client.SEARCH_LIMIT_MAX
+BATCH_SIZE = client.BATCH_SIZE
+
+
+def rewrite_image_url(url):
+    """向后兼容：委托给 client.rewrite_image_url。"""
+    return client.rewrite_image_url(url)
 
 CLUE_VERSION = 4    # 线索/评分聚合格式版本；v3.2 起类型过滤跟随 settings.SUBJECT_TYPES（默认 [2] 动画）
 
@@ -44,100 +45,46 @@ SOURCE_TAG_MAP = {
 }
 
 
-# ---------- 基础 HTTP ----------
-
-def _urlopen(req):
-    """带重试的请求：指数退避，网络波动/限流自动重试。
-
-    超时只依赖 urlopen 的 timeout 参数（作用于连接+读取），
-    不再触碰 socket.setdefaulttimeout —— 那是进程级全局状态，
-    多线程并发设置/恢复会互相覆盖（A 线程设置的超时会被 B 线程
-    恢复掉），是历史版本的竞态隐患。TLS 握手阶段 socket 已由
-    urlopen 创建并带 timeout，同样受控。
-    """
-    last = None
-    for attempt in range(settings.RETRY_TIMES + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=settings.HTTP_TIMEOUT) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except (urllib.error.HTTPError, urllib.error.URLError,
-                socket.timeout, TimeoutError, ConnectionError) as e:
-            last = e
-            if isinstance(e, urllib.error.HTTPError) and e.code not in (429, 500, 502, 503, 504):
-                break  # 非限流/非5xx错误不重试
-            if attempt < settings.RETRY_TIMES:
-                time.sleep(settings.RETRY_BASE * (2 ** attempt))
-    raise last
-
-
-def _get(path):
-    """GET Bangumi v0 API，返回解析后的 JSON。"""
-    req = urllib.request.Request(f"{API}{path}", headers=UA)
-    return _urlopen(req)
-
-
-def _post(path, body):
-    """POST Bangumi v0 API（search 系列接口是 POST）。"""
-    data = json.dumps(body).encode("utf-8")
-    headers = {**UA, "Content-Type": "application/json"}
-    req = urllib.request.Request(f"{API}{path}", data=data, headers=headers, method="POST")
-    return _urlopen(req)
-
-
-# ---------- 单点接口 ----------
+# ---------- 单点接口（薄包装，委托给 client） ----------
 
 def search_subjects(subject_type, start_year, end_year, limit=BATCH_SIZE, offset=0):
-    """按热度排序搜索作品（guessr buildFilter + fetchSubjects 的对应实现）。
-
-    subject_type: [2] / [1,2,4,6] 等 Bangumi 大类
-    日期上界用当前时间截断，避免抽到尚未播出的作品（与 guessr 一致）。
-    """
-    today = datetime.now()
-    end_date = min(datetime(end_year + 1, 1, 1), today).strftime("%Y-%m-%d")
-    body = {
-        "sort": "heat",
-        "filter": {
-            "type": subject_type,
-            "air_date": [f">={start_year}-01-01", f"<{end_date}"],
-        },
-    }
-    return _post(f"/search/subjects?limit={limit}&offset={offset}", body)
+    """按热度排序搜索作品。"""
+    return client.search_subjects(subject_type, start_year, end_year,
+                                  limit=limit, offset=offset)
 
 
 def get_subject_characters(subject_id):
     """GET /v0/subjects/{id}/characters"""
-    return _get(f"/subjects/{subject_id}/characters")
+    return client.get_subject_characters(subject_id)
 
 
 def get_character_detail(character_id):
     """GET /v0/characters/{id}"""
-    return _get(f"/characters/{character_id}")
+    return client.get_character_detail(character_id)
 
 
 def get_character_subjects(character_id):
     """GET /v0/characters/{id}/subjects"""
-    return _get(f"/characters/{character_id}/subjects")
+    return client.get_character_subjects(character_id)
 
 
 def get_subject_detail(subject_id):
-    """GET /v0/subjects/{id}（含 air_date / rating.score / meta_tags / tags，供线索补全）"""
-    return _get(f"/subjects/{subject_id}")
+    """GET /v0/subjects/{id}"""
+    return client.get_subject_detail(subject_id)
 
 
 def get_character_persons(character_id):
     """GET /v0/characters/{id}/persons（CV）"""
-    return _get(f"/characters/{character_id}/persons")
+    return client.get_character_persons(character_id)
 
 
 def search_characters(keyword, limit=10, offset=0):
-    """POST /v0/search/characters，按名字搜角色（猜题用，与 guessr SearchBar 一致）。
+    """POST /v0/search/characters，按名字搜角色（猜题用）。
 
     limit 钳制在 1~SEARCH_LIMIT_MAX，避免超过 API 上限被服务端拒绝；
     main.py 猜题时传 16 条正是为了覆盖"前缀路人占位"场景。
     """
-    limit = max(1, min(int(limit), SEARCH_LIMIT_MAX))
-    return _post(f"/search/characters?limit={limit}&offset={offset}",
-                 {"keyword": keyword.strip()})
+    return client.search_characters(keyword, limit=limit, offset=offset)
 
 
 # ---------- 工具 ----------
@@ -237,10 +184,10 @@ def get_aliases(info):
 
 def year_of_subject(subject):
     """从出演作品条目里取年份（air_date / date 字段，格式 YYYY-MM-DD）。"""
-    date = subject.get("air_date") or subject.get("date") or ""
-    if isinstance(date, (list, tuple)) and date:
-        date = date[0]
-    return int(str(date)[:4]) if len(str(date)) >= 4 and str(date)[:4].isdigit() else None
+    air_date = subject.get("air_date") or subject.get("date") or ""
+    if isinstance(air_date, (list, tuple)) and air_date:
+        air_date = air_date[0]
+    return int(str(air_date)[:4]) if len(str(air_date)) >= 4 and str(air_date)[:4].isdigit() else None
 
 
 def subject_name(subject):
@@ -266,11 +213,33 @@ def is_wife(gender, collects, min_collects):
 
 # 候选池缓存（内存 + 磁盘双缓存，按日期失效，一天只构建一次）
 _POOL_CACHE = {}
+_POOL_EMPTY_AT = {}      # key -> 上次建池为空的时间戳：冷却期内快速失败，避免网络故障时反复全量重建
 _POOL_BUILD_LOCK = threading.Lock()
 
 
 def _pool_cache_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".year_pool_cache.json")
+
+
+def _load_pool_disk_cache(today, subject_type, start_year, end_year, per_year):
+    """读磁盘缓存；仅当「当天 + 参数匹配 + 结果非空」才算有效。
+
+    空池是网络故障/限流的产物，不能当成功缓存——否则会毒化一整天
+    （历史事故：建池全失败后 items=[] 落盘，当天抽取全被空池命中）。
+    """
+    try:
+        with open(_pool_cache_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    if (data.get("date") == today
+            and tuple(data.get("types", [])) == tuple(subject_type)
+            and data.get("start") == start_year
+            and data.get("end") == end_year
+            and data.get("per") == per_year
+            and data.get("items")):
+        return data["items"]
+    return None
 
 
 def _build_year_pool(start_year=None, end_year=None,
@@ -295,31 +264,37 @@ def _build_year_pool(start_year=None, end_year=None,
     today = date.today().isoformat()
     key = (today, tuple(subject_type), start_year, end_year, per_year)
 
-    # 1) 内存缓存
-    if key in _POOL_CACHE:
-        return _POOL_CACHE[key]
+    # 1) 内存缓存：非空直接回；空池在冷却期内快速失败，冷却过后重新尝试构建
+    cached = _POOL_CACHE.get(key)
+    if cached is not None:
+        if cached:
+            return cached
+        if time.time() - _POOL_EMPTY_AT.get(key, 0) < settings.POOL_EMPTY_BACKOFF:
+            return []
 
-    with _POOL_BUILD_LOCK:
+    # 2) 磁盘缓存（当天有效且非空才算有效）
+    disk = _load_pool_disk_cache(today, subject_type, start_year, end_year, per_year)
+    if disk is not None:
+        _POOL_CACHE[key] = disk
+        return disk
+
+    # 3) 带超时获取建池锁：有人正在建池（通常是后台同步）时不等，快速失败返回空池。
+    #    历史问题：这里是无超时 threading.Lock，后台同步网络不通时每请求等满超时，
+    #    建池要 6+ 分钟，抽取线程在锁上无限阻塞 —— 玩家看到「正在抽取」后卡死。
+    if not _POOL_BUILD_LOCK.acquire(timeout=settings.POOL_LOCK_TIMEOUT):
+        return cached or []
+
+    try:
         # 双检锁：拿到锁后再确认一次缓存，避免预热与抽取并发重复构建
-        if key in _POOL_CACHE:
-            return _POOL_CACHE[key]
+        cached = _POOL_CACHE.get(key)
+        if cached:
+            return cached
+        disk = _load_pool_disk_cache(today, subject_type, start_year, end_year, per_year)
+        if disk is not None:
+            _POOL_CACHE[key] = disk
+            return disk
 
-        # 2) 磁盘缓存（当天有效）
-        try:
-            with open(_pool_cache_path(), encoding="utf-8") as f:
-                data = json.load(f)
-            if (data.get("date") == today
-                    and tuple(data.get("types", [])) == tuple(subject_type)
-                    and data.get("start") == start_year
-                    and data.get("end") == end_year
-                    and data.get("per") == per_year):
-                items = data.get("items") or []
-                _POOL_CACHE[key] = items
-                return items
-        except Exception:
-            pass
-
-        # 3) 构建候选池
+        # 4) 构建候选池
         pool = {}
         for y in range(start_year, end_year + 1):
             try:
@@ -333,17 +308,23 @@ def _build_year_pool(start_year=None, end_year=None,
                 continue
         items = list(pool.values())
 
-        # 4) 写磁盘缓存
-        try:
-            with open(_pool_cache_path(), "w", encoding="utf-8") as f:
-                json.dump({"date": today, "types": list(subject_type),
-                           "start": start_year, "end": end_year, "per": per_year,
-                           "items": items}, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-        _POOL_CACHE[key] = items
+        if items:
+            # 5) 写磁盘缓存（仅非空结果落盘，空池不缓存）
+            try:
+                with open(_pool_cache_path(), "w", encoding="utf-8") as f:
+                    json.dump({"date": today, "types": list(subject_type),
+                               "start": start_year, "end": end_year, "per": per_year,
+                               "items": items}, f, ensure_ascii=False)
+            except Exception:
+                pass
+            _POOL_CACHE[key] = items
+        else:
+            # 6) 空池：只记内存冷却，不落盘（网络恢复后冷却期一过即可自动重建）
+            _POOL_EMPTY_AT[key] = time.time()
+            _POOL_CACHE[key] = []
         return items
+    finally:
+        _POOL_BUILD_LOCK.release()
 
 
 def random_wife(start_year=None, end_year=None,
@@ -424,7 +405,7 @@ def random_wife(start_year=None, end_year=None,
                     "subject_name": subject.get("name_cn") or subject.get("name"),
                     "subject_type": subject_type_cn(subject.get("type")),
                 }
-        except Exception as e:
+        except Exception:
             # 网络波动：跳过本次尝试，继续重试
             time.sleep(settings.RATE_LIMIT)
     return None

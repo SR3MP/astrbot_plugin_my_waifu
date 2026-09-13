@@ -39,7 +39,7 @@ def _load():
         return {}
     try:
         return json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
+    except Exception:
         # 文件损坏：备份现场，绝不用空数据直接覆盖
         try:
             backup = f"{PROFILES_FILE}.corrupt_{int(__import__('time').time())}"
