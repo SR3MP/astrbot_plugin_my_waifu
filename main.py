@@ -1,5 +1,5 @@
 """
-专属老婆插件 v3.4.0（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
+专属老婆插件 v3.4.1（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
 ==============================================
 - v2.1 遗留问题：SUBJECT_POOL 硬编码仅 2 部作品
 - v3.0 解决：用 POST /v0/search/subjects 按年份+热度排序随机抽作品，
@@ -27,10 +27,11 @@
     /老婆移除 <名字>         把后宫里的老婆移除（打入冷宫）
     /老婆请回 <名字>         花积分把打入冷宫的老婆请回后宫
     /老婆群榜                查看全群老婆现状排行榜
-    /老婆卡池                查看卡池/查角色/按作品查
+    /老婆卡池                查看卡池(总览/翻页/查角色/查作品)
     /老婆立绘 <名字>         查看角色立绘（无图自动下载）
     /老婆帮助            查看帮助与游戏规则
 """
+import os
 import sys
 import time
 import threading
@@ -38,6 +39,16 @@ import asyncio
 import zhconv
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+
+try:
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+except ImportError:  # Pillow 缺失时立绘墙降级为纯文本
+    PILImage = ImageDraw = ImageFont = None
+
+try:
+    from astrbot.core.message.components import Plain, Image as ImageIcon
+except ImportError:
+    Plain = ImageIcon = None
 
 # 插件以 data.plugins.<目录>.<module> 包路径加载时，插件目录不在 sys.path 顶层，
 # 必须手动加入，否则 from bangumi import ... 会报 ModuleNotFoundError。
@@ -85,6 +96,85 @@ import local_db
 
 DATA_DIR = PLUGIN_DIR / "data"
 IMAGE_DIR = PLUGIN_DIR / "images"
+
+
+def _make_pool_wall(entries, page_no, pages, per_page):
+    """把当页角色画成一张立绘墙图（完整显示，不裁头）。
+
+    立绘按原比例缩进格子内（contain），四周补底色，避免头部/脚部被切掉；
+    名字单独放在格子下方，缺立绘的格子显示灰色占位块。
+    返回图片路径，失败返回 None。
+    """
+    if PILImage is None or not entries:
+        return None
+
+    def font(size):
+        for f in (
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ):
+            if os.path.isfile(f):
+                try:
+                    return ImageFont.truetype(f, size)
+                except Exception:
+                    pass
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            return ImageFont.load_default()
+
+    BG = "#101010"
+    COLS = 10
+    CELL_W, IMG_H, NAME_H = 150, 168, 30
+    CELL_H = IMG_H + NAME_H
+    rows = (len(entries) + COLS - 1) // COLS
+    W, H = COLS * CELL_W, 34 + rows * CELL_H
+
+    canvas = PILImage.new("RGB", (W, H), BG)
+    d = ImageDraw.Draw(canvas)
+    d.text((6, 8), f"立绘墙 · 第 {page_no}/{pages} 页 · 当页 {len(entries)} 位",
+           fill="#eaeaea", font=font(14))
+
+    fm, fn = font(13), font(11)
+    for idx, e in enumerate(entries):
+        col, row = idx % COLS, idx // COLS
+        x0, y0 = col * CELL_W, 34 + row * CELL_H
+        p = _image_path(e)
+        if p.exists() and p.stat().st_size > 0:
+            try:
+                with PILImage.open(p) as im:
+                    iw, ih = im.size
+                    scale = min(CELL_W / iw, IMG_H / ih)
+                    nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
+                    canvas.paste(im.convert("RGB").resize((nw, nh), PILImage.LANCZOS),
+                                 (x0 + (CELL_W - nw) // 2, y0 + (IMG_H - nh) // 2))
+            except Exception:
+                d.rectangle([x0 + 4, y0 + 4, x0 + CELL_W - 4, y0 + IMG_H - 4],
+                            fill="#1c1c1c")
+        else:
+            d.rectangle([x0 + 4, y0 + 4, x0 + CELL_W - 4, y0 + IMG_H - 4],
+                        fill="#1c1c1c", outline="#2a2a2a", width=1)
+            t = "缺立绘"
+            w = d.textlength(t, font=fn)
+            d.text((x0 + (CELL_W - w) / 2, y0 + IMG_H / 2 - 6), t,
+                   fill="#555555", font=fn)
+
+        nm = e.get("name_cn") or e.get("name") or f"id{e.get('id')}"
+        if len(nm) > 8:
+            nm = nm[:8] + "…"
+        w = d.textlength(nm, font=fn)
+        d.text((x0 + (CELL_W - w) / 2, y0 + IMG_H + 8), nm,
+               fill="#b0b0b0", font=fn)
+
+    out = DATA_DIR / "temp" / f"pool_wall_{page_no}_{len(entries)}.png"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(out, "PNG")
+        return str(out)
+    except Exception as e:
+        logger.warning(f"立绘墙生成失败: {e}")
+        return None
 
 
 def _api_fail_hint():
@@ -218,7 +308,7 @@ def _ensure_wife_image(wife):
         return None
 
 
-@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.0")
+@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.1")
 class WifePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -270,7 +360,7 @@ class WifePlugin(Star):
             "  /老婆移除 <名字>   移除后宫成员（打入冷宫）",
             "  /老婆请回 <名字>   花积分请回被移除成员",
             "  /老婆群榜          查看全群老婆现状",
-            "  /老婆卡池          卡池总览/查角色/查作品",
+            "  /老婆卡池          卡池总览/翻页/查角色/查作品",
             "  /老婆立绘 <名字>   查看角色立绘（无图自动下载）",
             "  /老婆帮助          查看帮助与规则说明",
             "━━━━━━━━━━━━━━━━",
@@ -677,7 +767,7 @@ class WifePlugin(Star):
 
     @filter.command("老婆卡池")
     async def on_wife_pool(self, event: AstrMessageEvent, query: GreedyStr = ""):
-        """查询老婆卡池：/老婆卡池 总览 ｜ /老婆卡池 <角色名> 查角色 ｜ /老婆卡池 作品 <作品名> 查作品。"""
+        """查询老婆卡池：/老婆卡池 总览 ｜ /老婆卡池 <页码> 翻页 ｜ /老婆卡池 <角色名> 查角色 ｜ /老婆卡池 作品 <作品名> 查作品。"""
         db = local_db.get_local_db()
         entries = (db or {}).get("entries") or []
         if not entries:
@@ -717,10 +807,46 @@ class WifePlugin(Star):
                 lines.append(f" {i:>2}. {nm}（{e.get('collects')} 收藏）")
             lines += [
                 "━━━━━━━━━━━━━━━━",
+                "📄 /老婆卡池 <页码>      翻页浏览（如 /老婆卡池 2）",
                 "🔍 /老婆卡池 <名字>     查角色",
                 "🎬 /老婆卡池 作品 <作品> 查作品",
             ]
             yield event.plain_result("\n".join(lines))
+            return
+
+        # ── 翻页浏览：/老婆卡池 <页码>（纯数字，跳过角色名搜索） ──
+        if q.isdigit():
+            page = int(q)
+            per_page = int(getattr(settings, "POOL_PAGE_SIZE", 50) or 50)
+            ranked = sorted(entries, key=lambda e: e.get("collects") or 0, reverse=True)
+            total = len(ranked)
+            pages = max(1, (total + per_page - 1) // per_page)
+            if page < 1 or page > pages:
+                yield event.plain_result(
+                    f"❌ 页码 {page} 超出范围（共 {pages} 页，每页 {per_page} 位）。试试 1 ~ {pages}。"
+                )
+                return
+            page_entries = ranked[(page - 1) * per_page:page * per_page]
+            lines = [
+                f"📄 老婆卡池 · 第 {page}/{pages} 页（共 {total} 位 · 收藏降序）",
+                "━━━━━━━━━━━━━━━━",
+            ]
+            for i, e in enumerate(page_entries, (page - 1) * per_page + 1):
+                nm = e.get("name_cn") or e.get("name") or f"id{e.get('id')}"
+                mark = "✅" if has_img(e) else "⬜"
+                lines.append(f" {i:>3}. {mark} {nm}（{e.get('collects') or 0} 收藏）")
+            lines.append("━━━━━━━━━━━━━━━━")
+            nav = []
+            if page > 1:
+                nav.append(f"/老婆卡池 {page - 1} 上一页")
+            if page < pages:
+                nav.append(f"/老婆卡池 {page + 1} 下一页")
+            lines.append("🏃 " + " ｜ ".join(nav) if nav else "🏁 已是全部")
+            yield event.plain_result("\n".join(lines))
+            # 立绘墙：当页角色缩略图拼图，附在列表后面
+            wall = await asyncio.to_thread(_make_pool_wall, page_entries, page, pages, per_page)
+            if wall:
+                yield event.image_result(wall)
             return
 
         # ── 作品查询：/老婆卡池 作品 <作品名> ──

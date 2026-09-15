@@ -20,8 +20,16 @@
         "type": "list",
         "description": "猜对梯度加成",
         "hint": "按第1~N次猜对的额外加分列表。如 [0,5,10,15,20] 表示第1次+0、第2次+5、第3次+10、第4次+15、第5次+20。列表长度应与「每日给积分次数」一致",
-        "default": [0, 5, 10, 15, 20],
-        "items": { "type": "int" }
+        "default": [
+          0,
+          5,
+          10,
+          15,
+          20
+        ],
+        "items": {
+          "type": "int"
+        }
       },
       "daily_solved_limit": {
         "type": "int",
@@ -70,7 +78,7 @@
         "type": "int",
         "description": "收藏数下限",
         "hint": "只抽收藏数超过此值的角色，避免太冷门",
-        "default": 450
+        "default": 300
       },
       "start_year": {
         "type": "int",
@@ -94,8 +102,12 @@
         "type": "list",
         "description": "作品类型",
         "hint": "抽取池包含的作品类型：2=动画, 4=游戏, 6=三次元, 1=书籍, 8=其他。默认仅动画 [2]",
-        "default": [2],
-        "items": { "type": "int" }
+        "default": [
+          2
+        ],
+        "items": {
+          "type": "int"
+        }
       },
       "main_only": {
         "type": "bool",
@@ -212,6 +224,19 @@
         "description": "同步冷却(秒)",
         "hint": "上一次同步失败/产出空库后，N 秒内不重复触发重建，避免反复轰炸 API",
         "default": 600
+      }
+    }
+  },
+  "pool": {
+    "type": "object",
+    "description": "卡池浏览",
+    "hint": "/老婆卡池 相关的浏览设置",
+    "items": {
+      "page_size": {
+        "type": "int",
+        "description": "每页人数",
+        "hint": "/老婆卡池 <页码> 每页显示的角色数。默认 50 时一页消息约 1100 字、50 行，主流平台单条安全；范围 10~200",
+        "default": 50
       }
     }
   }

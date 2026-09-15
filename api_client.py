@@ -26,7 +26,7 @@ from pathlib import Path
 
 import settings
 
-VERSION = "3.4.0"
+VERSION = "3.4.1"
 
 
 class BangumiClient:

@@ -72,6 +72,9 @@ SYNC_RATE = 0.1
 CLUE_CACHE_LIMIT = 3000
 SYNC_BACKOFF = 600        # 同步冷却（秒）：上一次同步尝试失败/产出空库后，N 秒内不重复触发重建
 
+# ===== 卡池浏览 =====
+POOL_PAGE_SIZE = 50       # /老婆卡池 <页码> 每页显示的角色数（立绘墙一页的人头数）
+
 
 def _as_int(value, default, lo=None, hi=None):
     """把配置值安全转 int；非法值回退默认；lo/hi 非空时钳制范围。"""
@@ -177,3 +180,7 @@ def load(config):
     SYNC_RATE = _as_float(ldb.get("sync_rate"), SYNC_RATE, lo=0.0)
     CLUE_CACHE_LIMIT = _as_int(ldb.get("clue_cache_limit"), CLUE_CACHE_LIMIT, lo=1)
     SYNC_BACKOFF = _as_int(ldb.get("sync_backoff"), SYNC_BACKOFF, lo=0)
+
+    pl = config.get("pool") or {}
+    global POOL_PAGE_SIZE
+    POOL_PAGE_SIZE = _as_int(pl.get("page_size"), POOL_PAGE_SIZE, lo=10, hi=200)  # 钳制在 10~200 人/页
