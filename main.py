@@ -1,5 +1,5 @@
 """
-专属老婆插件 v3.4.1（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
+专属老婆插件 v3.4.2（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
 ==============================================
 - v2.1 遗留问题：SUBJECT_POOL 硬编码仅 2 部作品
 - v3.0 解决：用 POST /v0/search/subjects 按年份+热度排序随机抽作品，
@@ -340,7 +340,7 @@ def _ensure_wife_image(wife):
         return None
 
 
-@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.1")
+@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.2")
 class WifePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
