@@ -98,6 +98,38 @@ DATA_DIR = PLUGIN_DIR / "data"
 IMAGE_DIR = PLUGIN_DIR / "images"
 
 
+def _local_exact_guess(kw_norm):
+    """在本地线索缓存中按名字精确查找角色，返回聚合信息或 None。
+
+    Bangumi 搜索索引会漏收个别角色（例如 2025 年新角色 id=59847「空門蒼」），
+    但出题用的是本地缓存/角色详情，两侧数据源不一致会造成
+    「答案就在这里、输入正确名字却搜不到」的死局。
+    这里用简繁归一化后的 原名/中文名/别名 精确比对，命中即绕过在线搜索。
+    """
+    if not kw_norm:
+        return None
+    try:
+        db = local_db._load_json(local_db.CLUE_DB) or {}
+    except Exception:
+        return None
+
+    def _variants(info):
+        out = set()
+        for key in ("name", "name_cn"):
+            v = info.get(key)
+            if v:
+                out.add(zhconv.convert(str(v).strip(), "zh-hans"))
+        for alias in info.get("aliases") or []:
+            if alias:
+                out.add(zhconv.convert(str(alias).strip(), "zh-hans"))
+        return out
+
+    for info in db.values():
+        if isinstance(info, dict) and kw_norm in _variants(info):
+            return info
+    return None
+
+
 def _make_pool_wall(entries, page_no, pages, per_page):
     """把当页角色画成一张立绘墙图（完整显示，不裁头）。
 
@@ -541,69 +573,68 @@ class WifePlugin(Star):
             yield msg
 
     async def _guess_personal(self, event, uid, answer, name):
-        """个人老婆猜题：搜索→对比→结算积分/迎娶资格。"""
-        try:
-            resp = await asyncio.to_thread(search_characters, name, settings.GUESS_SEARCH_LIMIT)   # 条数可配置（原硬编码 16）
-            results = resp.get("data") or []
-        except Exception as e:
-            logger.warning(f"猜老婆：搜索角色失败: {e}")
-            yield event.plain_result(f"❌ 搜索 Bangumi 失败，请稍后再试。{_api_fail_hint()}")
-            return
-
-        if not results:
-            yield event.plain_result("🤔 Bangumi 上没搜到这个角色，换个名字试试？")
-            return
-
-        # 排序：归一化精确匹配为主，收藏数次之；低收藏占位角色不参与精确优先。
-        #
-        # 为什么精确匹配（归一化后）优先？
-        #   Bangumi 搜索词与结果存在简繁差异：搜「天野阳菜」返回「天野陽菜」(繁体)，
-        #   原逻辑 name==kw 直接判不等 → 精确 tiebreaker 失效 → 纯拼收藏数，
-        #   导致收藏 513 的天野遠子顶掉收藏 434 的天野陽菜(用户明明搜的就是她)。
-        #   用 zhconv 归一化简繁后比较，可恢复精确匹配。
-        #
-        # 为什么还要过滤低收藏占位角色？
-        #   搜「三笠」时存在 name 恰为「三笠」的路人角色(收藏 0/1)，若精确匹配无条件优先，
-        #   会把收藏 1014 的三笠·阿克曼顶掉。收藏数 >= 10 视为"真实角色"才享受精确优先。
-        #
-        # 为什么还要匹配 infobox 简体中文名（_CN_CACHE）？
-        #   部分角色搜索接口的 name_cn 为空，简体中文名藏在详情 infobox 里：
-        #   搜「我」时答案「我(わたし)」的 name="わたし"、name_cn 为空，但 infobox
-        #   简体中文名 =「我」。若不补齐，精确匹配失效 → 纯拼收藏数 →
-        #   收藏 829 的我妻由乃顶掉收藏 126 的正确答案。_attach_collects 反正要拉
-        #   详情取收藏数，顺带提取简体中文名，零额外请求。
-        #
-        # 为什么收藏数仍保留？
-        #   非精确命中的场景(前缀/日文名搜索)下，收藏数 = 全站关注度，比 Bangumi 原始序
-        #   (基于字符重合度，搜「三笠」时 14 个"三笠XX"前缀路人挤占前 14 位)更可靠。
+        """个人老婆猜题：本地精确匹配 → 在线搜索 → 对比 → 结算积分/迎娶资格。"""
         kw = (name or "").strip()
         kw_norm = zhconv.convert(kw, "zh-hans")
-        _COLLECTS_MAP = _attach_collects(results)
 
-        def _rank(c):
-            nc = zhconv.convert((c.get("name_cn") or "").strip(), "zh-hans")
-            nm = zhconv.convert((c.get("name") or "").strip(), "zh-hans")
-            collects, cn = _COLLECTS_MAP.get(c.get("id"), (0, ""))
-            cn = zhconv.convert((cn or "").strip(), "zh-hans")
-            exact = 0 if (nc == kw_norm or nm == kw_norm or cn == kw_norm) and collects >= 10 else 1
-            return (exact, -collects)
-        results.sort(key=_rank)
+        # ① 本地精确匹配优先。
+        # 背景：Bangumi 搜索索引漏收个别角色（如 id=59847「空門蒼」），
+        # 出题却来自本地缓存/详情接口，于是玩家输入正确答案仍被判"没搜到"。
+        # 线索缓存里用简繁归一化后的 原名/中文名/别名 精确比对，命中即直接对比。
+        guess_info = await asyncio.to_thread(_local_exact_guess, kw_norm)
+        if guess_info:
+            logger.info(f"猜老婆：本地精确命中 id={guess_info.get('id')} kw={kw}")
+        else:
+            # ② 在线搜索；索引常按繁体收录，简体无结果时用繁体兜底一次。
+            results = []
+            search_failed = False
+            for term in dict.fromkeys((kw, zhconv.convert(kw, "zh-hant"))):
+                if not term:
+                    continue
+                try:
+                    resp = await asyncio.to_thread(
+                        search_characters, term, settings.GUESS_SEARCH_LIMIT)
+                    results = resp.get("data") or []
+                except Exception as e:
+                    logger.warning(f"猜老婆：搜索角色失败({term}): {e}")
+                    search_failed = True
+                if results:
+                    break
+            if not results:
+                if search_failed and zhconv.convert(kw, "zh-hant") == kw:
+                    yield event.plain_result(f"❌ 搜索 Bangumi 失败，请稍后再试。{_api_fail_hint()}")
+                else:
+                    yield event.plain_result("🤔 Bangumi 上没搜到这个角色，换个名字试试？")
+                return
 
-        cid = results[0]["id"]
-        try:
-            # 聚合最多放行 DRAW_TIMEOUT 秒：网络波动时角色详情逐个请求可能卡很久，
-            # 不能让玩家无限等（超时后线程仍在后台跑完，不会阻塞响应）
-            guess_info = await asyncio.wait_for(
-                asyncio.to_thread(collect_character_info, cid),
-                timeout=settings.DRAW_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning(f"猜老婆：聚合超时（>{settings.DRAW_TIMEOUT}s）id={cid}")
-            yield event.plain_result(f"❌ 解析该角色超时（Bangumi 网络波动），请稍后重试。{_api_fail_hint()}")
-            return
-        except Exception as e:
-            logger.warning(f"猜老婆：聚合玩家猜测失败 id={cid}: {e}")
-            yield event.plain_result("❌ 解析该角色失败，请换个名字。")
-            return
+            # 排序：简繁归一化精确匹配优先，收藏数次之；低收藏占位角色不享受精确优先。
+            # _attach_collects 顺带从详情提取 infobox 简体中文名，
+            # 解决部分角色 name_cn 为空导致精确匹配失效的问题。
+            _COLLECTS_MAP = _attach_collects(results)
+
+            def _rank(c):
+                nc = zhconv.convert((c.get("name_cn") or "").strip(), "zh-hans")
+                nm = zhconv.convert((c.get("name") or "").strip(), "zh-hans")
+                collects, cn = _COLLECTS_MAP.get(c.get("id"), (0, ""))
+                cn = zhconv.convert((cn or "").strip(), "zh-hans")
+                exact = 0 if (nc == kw_norm or nm == kw_norm or cn == kw_norm) and collects >= 10 else 1
+                return (exact, -collects)
+            results.sort(key=_rank)
+
+            cid = results[0]["id"]
+            try:
+                # 聚合放行 DRAW_TIMEOUT 秒，避免网络波动时无限等待
+                guess_info = await asyncio.wait_for(
+                    asyncio.to_thread(collect_character_info, cid),
+                    timeout=settings.DRAW_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.warning(f"猜老婆：聚合超时（>{settings.DRAW_TIMEOUT}s）id={cid}")
+                yield event.plain_result(f"❌ 解析该角色超时（Bangumi 网络波动），请稍后重试。{_api_fail_hint()}")
+                return
+            except Exception as e:
+                logger.warning(f"猜老婆：聚合玩家猜测失败 id={cid}: {e}")
+                yield event.plain_result("❌ 解析该角色失败，请换个名字。")
+                return
 
         lines, hit = compare(guess_info, answer)
         guess_name = guess_info.get("name_cn") or guess_info.get("name") or name
