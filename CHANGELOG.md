@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.4.3 — 2026-11-23
+
+### 合规改造（上架要求）
+
+1. **数据持久化目录迁移到 `data/plugin_data/<plugin_name>`**
+   - **问题**：旧版把 `user_profiles.json`、`wife_db.json`、`clue_cache.json`、`.year_pool_cache.json` 和立绘 `images/` 全写在插件自身目录，不符合 AstrBot 上架规范，影响用户数据迁移与审计。
+   - **修复**：新增 `paths.py` 统一管理数据目录（通过 `StarTools.get_data_dir()` 获取 AstrBot 官方数据路径）。`harem.py` / `local_db.py` / `bangumi.py` / `main.py` 全部改用该目录；插件自身目录只保留代码与静态资源。
+   - **数据迁移**：导入时自动把旧目录数据一次性迁移到新目录（幂等、目标已存在不覆盖、立绘仅补缺）；`user_profiles.json` / `wife_db.json` / `clue_cache.json` / 年份池缓存 / 187 张立绘完整搬迁。AstrBot 框架管理的 `cmd_config.json`、`t2i_templates` 不迁移。
+
+2. **`main.py` `_attach_collects` 改为异步，不再阻塞事件循环**
+   - **问题**：原用 `ThreadPoolExecutor.ex.map` 同步等待批量网络请求，且在 async 的 `_guess_personal()` 中直接调用，会卡住整个 bot 的事件循环。
+   - **修复**：改为 `async def`，用 `asyncio.Semaphore(6)` 限流 + `asyncio.to_thread` 把同步网络请求/限速 sleep 整体丢到线程池，调用处改 `await`。
+
 ## v3.4.2 — 2026-11-22
 
 ### Bug 修复

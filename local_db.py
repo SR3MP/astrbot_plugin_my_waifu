@@ -29,6 +29,11 @@ if str(PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(PLUGIN_DIR))
 
 import settings
+import paths
+
+# 命令行同步脚本单独运行时也需确保旧数据已迁移到 plugin_data（幂等）
+paths.migrate_legacy_data()
+paths.ensure_dirs()
 
 from bangumi import (
     CLUE_VERSION,
@@ -43,9 +48,10 @@ from bangumi import (
     is_wife,
 )
 
-DATA_DIR = os.path.join(PLUGIN_DIR, "data")
-WIFE_DB = os.path.join(DATA_DIR, "wife_db.json")
-CLUE_DB = os.path.join(DATA_DIR, "clue_cache.json")
+# 数据目录遵循 AstrBot 上架规范：data/plugin_data/<plugin_name>（见 paths.py）
+DATA_DIR = str(paths.DATA_DIR)
+WIFE_DB = str(paths.DATA_DIR / "wife_db.json")
+CLUE_DB = str(paths.DATA_DIR / "clue_cache.json")
 
 _MAX_LOG = 8              # 进度日志最多打印条数
 

@@ -18,6 +18,7 @@ import time
 from datetime import date
 
 import settings
+import paths
 from api_client import client
 
 # 向后兼容的常量（实际值由 BangumiClient 定义）
@@ -218,7 +219,8 @@ _POOL_BUILD_LOCK = threading.Lock()
 
 
 def _pool_cache_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".year_pool_cache.json")
+    # 遵循 AstrBot 上架规范：数据写入 data/plugin_data/<plugin_name>
+    return str(paths.DATA_DIR / ".year_pool_cache.json")
 
 
 def _load_pool_disk_cache(today, subject_type, start_year, end_year, per_year):

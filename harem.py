@@ -26,9 +26,10 @@ from datetime import date
 from pathlib import Path
 
 import settings
+import paths
 
-PLUGIN_DIR = Path(__file__).resolve().parent
-DATA_DIR = PLUGIN_DIR / "data"
+# 数据目录遵循 AstrBot 上架规范：data/plugin_data/<plugin_name>（见 paths.py）
+DATA_DIR = paths.DATA_DIR
 PROFILES_FILE = DATA_DIR / "user_profiles.json"
 
 _LOCK = threading.RLock()  # 串行化所有档案读写

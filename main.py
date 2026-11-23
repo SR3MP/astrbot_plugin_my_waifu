@@ -1,5 +1,5 @@
 """
-专属老婆插件 v3.4.2（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
+专属老婆插件 v3.4.3（Bangumi 实时版 + 后宫积分系统 + 全配置化 + 统一 API 客户端）
 ==============================================
 - v2.1 遗留问题：SUBJECT_POOL 硬编码仅 2 部作品
 - v3.0 解决：用 POST /v0/search/subjects 按年份+热度排序随机抽作品，
@@ -38,7 +38,6 @@ import threading
 import asyncio
 import zhconv
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 try:
     from PIL import Image as PILImage, ImageDraw, ImageFont
@@ -80,6 +79,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.core.star.filter.command import GreedyStr
 
 import settings
+import paths
 from api_client import client
 from bangumi import (
     random_wife,
@@ -94,8 +94,11 @@ from guess import compare, build_hints
 import harem
 import local_db
 
-DATA_DIR = PLUGIN_DIR / "data"
-IMAGE_DIR = PLUGIN_DIR / "images"
+# 数据目录遵循 AstrBot 上架规范：data/plugin_data/<plugin_name>（见 paths.py）
+# 导入时一次性迁移旧版写在插件目录内的数据（幂等，不覆盖新数据）
+_MIGRATE_NOTES = paths.migrate_legacy_data()
+DATA_DIR = paths.DATA_DIR
+IMAGE_DIR = paths.IMAGE_DIR
 
 
 def _local_exact_guess(kw_norm):
@@ -199,7 +202,7 @@ def _make_pool_wall(entries, page_no, pages, per_page):
         d.text((x0 + (CELL_W - w) / 2, y0 + IMG_H + 8), nm,
                fill="#b0b0b0", font=fn)
 
-    out = DATA_DIR / "temp" / f"pool_wall_{page_no}_{len(entries)}.png"
+    out = paths.TEMP_DIR / f"pool_wall_{page_no}_{len(entries)}.png"
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(out, "PNG")
@@ -276,14 +279,17 @@ def _get_collects(cid):
     return val, cn_val
 
 
-def _attach_collects(results):
-    """并发把搜索结果里每个角色的收藏数 + 简体中文名补齐，返回 {id: (collects, cn)}。
+async def _attach_collects(results):
+    """异步并发把搜索结果里每个角色的收藏数 + 简体中文名补齐，返回 {id: (collects, cn)}。
 
     简体中文名来自详情 infobox（搜索接口的 name_cn 经常为空），
     供排序精确匹配使用（如搜「我」→ 答案「我/わたし」的简体中文名是「我」）。
     并发上限 6，避免瞬间打爆 Bangumi；每个请求前让 150ms（=settings.RATE_LIMIT），
     与 bangumi.py 内置限速保持一致，避免触发 429。
     已命中的角色走缓存 0 开销。
+
+    上架规范：网络请求必须在线程池执行（asyncio.to_thread），
+    不得在事件循环里同步阻塞（原先的 ThreadPoolExecutor.ex.map 会卡住整个 bot）。
     """
     ids = []
     for c in results:
@@ -296,18 +302,22 @@ def _attach_collects(results):
         return {c.get("id"): (_cache_get(c.get("id")) or 0, _cn_get(c.get("id")) or "") for c in results if c.get("id")}
 
     out = {}
+    sem = asyncio.Semaphore(6)
 
-    def _one(cid):
+    def _one_sync(cid):
+        # 同步部分（含限速 sleep 和网络请求）整体丢到线程池，不占事件循环
         if _cache_get(cid) is not None and _cn_get(cid) is not None:
-            return cid
+            return
         time.sleep(settings.RATE_LIMIT)
         v, cn = _get_collects(cid)
         with _COLLECTS_LOCK:
             out[cid] = (v, cn)
-        return cid
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(_one, ids))
+    async def _one(cid):
+        async with sem:
+            await asyncio.to_thread(_one_sync, cid)
+
+    await asyncio.gather(*(_one(cid) for cid in ids))
 
     for cid, (v, cn) in out.items():
         _cache_set(cid, v, cn)
@@ -340,15 +350,16 @@ def _ensure_wife_image(wife):
         return None
 
 
-@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.2")
+@register("astrbot_plugin_my_waifu", "SR3MP", "专属老婆（Bangumi版）", "3.4.3")
 class WifePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
         # 从 WebUI 插件配置覆盖所有默认值
         settings.load(config)
         self.config = config
-        DATA_DIR.mkdir(exist_ok=True)
-        IMAGE_DIR.mkdir(exist_ok=True)
+        paths.ensure_dirs()
+        if _MIGRATE_NOTES:
+            logger.info(f"my_waifu：已从插件目录迁移旧数据到 plugin_data：{', '.join(_MIGRATE_NOTES)}")
 
     # ---------- 帮助文本（动态生成） ----------
 
@@ -610,7 +621,7 @@ class WifePlugin(Star):
             # 排序：简繁归一化精确匹配优先，收藏数次之；低收藏占位角色不享受精确优先。
             # _attach_collects 顺带从详情提取 infobox 简体中文名，
             # 解决部分角色 name_cn 为空导致精确匹配失效的问题。
-            _COLLECTS_MAP = _attach_collects(results)
+            _COLLECTS_MAP = await _attach_collects(results)
 
             def _rank(c):
                 nc = zhconv.convert((c.get("name_cn") or "").strip(), "zh-hans")
